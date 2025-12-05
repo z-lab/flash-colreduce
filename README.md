@@ -3,7 +3,7 @@
 **Efficient attention column-sum primitives with Triton kernels**
 
 [![PyPI](https://img.shields.io/pypi/v/flash-colsum)](https://pypi.org/project/flash-colsum/)
-[![License](https://img.shields.io/badge/license-Apache%20License%202.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 
 Flash-ColSum provides efficient implementations for computing the mean attention column sum without materializing full attention matrices.
 
