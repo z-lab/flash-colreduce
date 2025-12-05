@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flash-colsum"
+version = "0.2.0"
+description = "Fast attention column-sum primitives with Triton kernels"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache License" }
+authors = [
+  { name = "Samir Khaki" }
+]
+dependencies = [
+  "torch>=2.1",
+  "triton>=3.0.0",
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+  "matplotlib>=3.7",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+
+[project.urls]
+Homepage = "https://github.com/z-lab/flash-colsum"
+Issues = "https://github.com/z-lab/flash-colsum/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["flash_colsum*"]
+
+
