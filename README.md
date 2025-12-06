@@ -140,7 +140,7 @@ If you use Flash-ColSum in your research, please cite our SparseVILA paper:
 
 ## License
 
-Apache License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
