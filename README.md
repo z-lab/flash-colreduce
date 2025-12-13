@@ -82,19 +82,6 @@ col_sum = flash_colsum(Q, K, is_causal=True) # Shape: (1, 4096)
 col_mean = flash_colmean(Q, K, is_causal=True) # Shape: (1, 4096)
 ```
 
-## How It Works
-
-Standard attention computes:
-$$A = \text{Softmax}\left(\frac{QK^T}{\sqrt{d}}\right)$$
-
-Flash-ColSum computes the column sum vector $S \in \mathbb{R}^N$ directly:
-$$S_j = \sum_{i=1}^M A_{ij}$$
-
-Or the column mean vector $\mu \in \mathbb{R}^N$:
-$$\mu_j = \frac{1}{|\{i \mid \text{mask}_{ij}=1\}|} \sum_{i=1}^M A_{ij}$$
-
-The kernel fuses the dot product, masking, softmax exponentiation, and reduction into a single pass, keeping the large $M \times N$ attention matrix in GPU SRAM (cache) and never writing it to HBM (main memory).
-
 ## Performance
 
 Flash-ColSum achieves significant speedups and memory savings over naïve implementations. By fusing the softmax and reduction steps, it avoids writing the huge $B \times H \times M \times N$ matrix to GPU memory.
@@ -137,13 +124,11 @@ FLASH_COLSUM_RUN_BENCH=1 pytest tests/test_benchmarks.py -v -s
 If you use Flash-ColSum in your research, please cite the SparseVILA paper:
 
 ```bibtex
-@InProceedings{Khaki_2025_ICCV,
-    author    = {Khaki, Samir and Guo, Junxian and Tang, Jiaming and Yang, Shang and Chen, Yukang and Plataniotis, Konstantinos N. and Lu, Yao and Han, Song and Liu, Zhijian},
-    title     = {SparseVILA: Decoupling Visual Sparsity for Efficient VLM Inference},
-    booktitle = {Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
-    month     = {October},
-    year      = {2025},
-    pages     = {23784-23794}
+@inproceedings{khaki2025sparsevila,
+  title = {{SparseVILA: Decoupling Visual Sparsity for Efficient VLM Inference}},
+  author = {Khaki, Samir and Guo, Junxian and Tang, Jiaming and Yang, Shang and Chen, Yukang and Plataniotis, Konstantinos N and Lu, Yao and Han, Song and Liu, Zhijian},
+  booktitle = {Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
+  year = {2025}
 }
 ```
 
