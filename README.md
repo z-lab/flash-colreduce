@@ -1,27 +1,29 @@
 # Flash-ColSum
 
-**Efficient attention column-sum primitives with Triton kernels.**
+**Fast, memory-efficient attention column sum.**
 
 [![PyPI](https://img.shields.io/pypi/v/flash-colsum)](https://pypi.org/project/flash-colsum/)
 [![License](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-**Flash-ColSum** provides highly optimized Triton kernels for computing the column sums (or means) of the attention matrix **without materializing the full $O(N^2)$ attention weights**. 
+**Flash-ColSum** provides highly optimized Triton kernels for computing the column sums (or means) of the attention matrix **without materializing the full $O(N^2)$ attention weights**.
 
 This primitive is essential for efficient KV-cache pruning, token importance estimation, and attention analysis in Large Language Models (LLMs) and Vision-Language Models (VLMs), such as [SparseVILA](https://arxiv.org/abs/2510.17777).
 
 ## Why Flash-ColSum?
 
-- **Memory Efficiency**: Computes column statistics in $O(N)$ memory instead of $O(N^2)$, allowing processing of very long sequences (e.g., 128k+) on a single GPU.
-- **Speed**: Fused Triton kernels minimize HBM reads/writes, significantly outperforming naive PyTorch implementations.
-- **Flexibility**: Supports both **Causal** (autoregressive) and **Non-Causal** (bidirectional) attention patterns, including irregular shapes (e.g., $M \neq N$).
+- **🚀 Speed**: Fused Triton kernels minimize HBM reads/writes, significantly outperforming naive PyTorch implementations.
+- **💾 Memory Efficiency**: Computes column statistics in **$O(N)$ memory** instead of $O(N^2)$.
+    - *Example*: Processing a 128k sequence length on a single A6000 GPU (where naive PyTorch OOMs).
+- **🧩 Flexibility**: Supports both **Causal** (autoregressive) and **Non-Causal** (bidirectional) attention patterns, including irregular shapes (e.g., $M \neq N$).
+- **✅ Correctness**: Numerically stable online softmax (FlashAttention style) and correct handling of causal masking normalization.
 
-## Features
+## Prerequisites
 
-- ⚡ **Fused Kernels**: Online softmax and reduction fused into a single kernel.
-- 📐 **Flexible Shapes**: Handles batched inputs, non-square attention ($Q_{len} \neq K_{len}$), and multi-head attention.
-- 🎭 **Causal Masking**: Correctly handles right-aligned causal masking for autoregressive decoding (where later keys are attended to by fewer queries).
-- 📊 **Weighted Means**: Built-in support for computing column means with correct normalization factors for causal masking.
+- **Python**: 3.10+
+- **PyTorch**: 2.1+ (with CUDA support)
+- **Triton**: 3.0.0+
+- **GPU**: NVIDIA GPU with Compute Capability 8.0+ (Ampere or newer recommended)
 
 ## Installation
 
@@ -39,9 +41,9 @@ pip install -e .
 
 ## Usage
 
-### Basic Example (Non-Causal)
+### 1. Non-Causal Attention (Bidirectional)
 
-Compute the column sum of the attention matrix for standard bidirectional attention.
+Compute the column sum of the attention matrix. This is equivalent to summing the attention weights $\text{Softmax}(QK^T)$ over the query dimension.
 
 ```python
 import torch
@@ -54,15 +56,14 @@ dtype = torch.float16
 Q = torch.randn(8, 16, 512, 64, device=device, dtype=dtype)
 K = torch.randn(8, 16, 512, 64, device=device, dtype=dtype)
 
-# Returns: (Batch, Key_Len)
-# Aggregated over all queries and heads
+# Returns: (Batch, Key_Len) aggregated over all queries and heads
 col_sum = flash_colsum(Q, K) 
 print(col_sum.shape) # (8, 512)
 ```
 
-### Causal Attention (KV Cache Scenarios)
+### 2. Causal Attention (KV Cache)
 
-Handle autoregressive attention where $M \neq N$ (e.g., decoding steps or prompt processing).
+Handle autoregressive attention where $M \neq N$ (e.g., decoding steps). The kernel applies a **right-aligned causal mask**.
 
 ```python
 import torch
@@ -72,29 +73,27 @@ from flash_colsum import flash_colsum, flash_colmean
 Q = torch.randn(1, 32, 128, 128, device="cuda", dtype=torch.float16)
 K = torch.randn(1, 32, 4096, 128, device="cuda", dtype=torch.float16)
 
-# Compute column sums with causal masking (right-aligned)
-# Keys at the end of the sequence are attended to by fewer queries.
+# Compute column sums with causal masking
 col_sum = flash_colsum(Q, K, is_causal=True) # Shape: (1, 4096)
 
 # Compute column means (automatically handles the varying denominator due to masking)
+# Keys at the start are attended to by ALL queries.
+# Keys at the end are attended to by FEWER queries (due to causality).
 col_mean = flash_colmean(Q, K, is_causal=True) # Shape: (1, 4096)
 ```
 
-## API Reference
+## How It Works
 
-### `flash_colsum(query, key, scale=None, is_causal=False)`
+Standard attention computes:
+$$A = \text{Softmax}\left(\frac{QK^T}{\sqrt{d}}\right)$$
 
-Computes $S_{b,k} = \sum_{h, m} \text{Softmax}(Q K^T)_{b,h,m,k}$.
+Flash-ColSum computes the column sum vector $S \in \mathbb{R}^N$ directly:
+$$S_j = \sum_{i=1}^M A_{ij}$$
 
-- **query**: `(B, H, M, D)`
-- **key**: `(B, H, N, D)`
-- **is_causal**: If `True`, applies a right-aligned causal mask. Useful when $K$ represents a KV cache and $Q$ represents new tokens.
-- **scale**: Softmax scaling factor. Defaults to $1/\sqrt{D}$.
-- **Returns**: `(B, N)` tensor containing the sum of attention weights for each key position.
+Or the column mean vector $\mu \in \mathbb{R}^N$:
+$$\mu_j = \frac{1}{|\{i \mid \text{mask}_{ij}=1\}|} \sum_{i=1}^M A_{ij}$$
 
-### `flash_colmean(query, key, scale=None, is_causal=False)`
-
-Computes the average attention weight per key token. This is a convenience wrapper around `flash_colsum` that divides by the correct number of participating queries for each key (which varies in the causal case).
+The kernel fuses the dot product, masking, softmax exponentiation, and reduction into a single pass, keeping the large $M \times N$ attention matrix in GPU SRAM (cache) and never writing it to HBM (main memory).
 
 ## Performance
 
