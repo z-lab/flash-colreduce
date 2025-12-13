@@ -31,17 +31,4 @@ def test_correctness(
     output = flash_impl(query, key, is_causal=is_causal)
     target = naive_impl(query, key, is_causal=is_causal)
 
-    if target.shape != output.shape:
-        raise AssertionError(
-            "Shape mismatch:\n"
-            + f"  output.shape = {tuple(output.shape)}\n"
-            + f"  target.shape = {tuple(target.shape)}"
-        )
-
-    if not torch.allclose(target, output, atol=1e-3, rtol=1e-3):
-        error = (output - target).abs()
-        raise AssertionError(
-            "Value mismatch:\n"
-            + f"  max_abs_error = {error.max().item():.5g}\n"
-            + f"  max_rel_error = {(error / target.abs().clip(min=1e-6)).max().item():.5g}"
-        )
+    torch.testing.assert_close(output, target, atol=1e-3, rtol=1e-3)

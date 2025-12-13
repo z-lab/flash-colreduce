@@ -7,95 +7,132 @@ import triton.language as tl
 __all__ = ["flash_colsum", "flash_colmean"]
 
 
-INF = tl.constexpr(1e6)
+@triton.jit
+def _mask_scores(
+    scores,
+    indices_m,
+    indices_n,
+    M,
+    N,
+    APPLY_CAUSAL: tl.constexpr,
+    APPLY_ROW_BOUND: tl.constexpr,
+    APPLY_COL_BOUND: tl.constexpr,
+):
+    if APPLY_CAUSAL:
+        scores = tl.where(
+            indices_m[:, None] + max(N - M, 0) >= indices_n[None, :],
+            scores,
+            -float("inf"),
+        )
+    if APPLY_ROW_BOUND:
+        scores = tl.where(indices_m[:, None] < M, scores, -float("inf"))
+    if APPLY_COL_BOUND:
+        scores = tl.where(indices_n[None, :] < N, scores, -float("inf"))
+    return scores
 
 
 @triton.jit
-def _attn_qk_softmax_lse_update(
-    l_i,
-    m_i,
-    q,
+def _online_softmax_lse_update(
+    l_running,
+    m_running,
+    q_block,
     k_block_ptr,
-    start_m,
     scale,
-    offsets_m,
-    lo,
-    hi,
+    indices_m,
+    n_min,
+    n_max,
     M,
     N,
     BLOCK_N: tl.constexpr,
-    ON_BAND: tl.constexpr,
+    APPLY_CAUSAL: tl.constexpr,
 ):
-    C = max(0, N - M)
-    k_block_ptr = tl.advance(k_block_ptr, (0, lo))
+    k_block_ptr = tl.advance(k_block_ptr, (0, n_min))
 
-    indices_m = start_m + offsets_m
-
-    for start_n in range(lo, hi, BLOCK_N):
+    for start_n in range(n_min, n_max, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
         indices_n = start_n + tl.arange(0, BLOCK_N)
 
-        k = tl.load(k_block_ptr, boundary_check=(1,), padding_option="zero")
+        k_block = tl.load(k_block_ptr, boundary_check=(1,), padding_option="zero")
         k_block_ptr = tl.advance(k_block_ptr, (0, BLOCK_N))
 
-        qk = tl.dot(q, k) * scale
-        if ON_BAND:
-            qk = tl.where(indices_m[:, None] + C >= indices_n[None, :], qk, -INF)
-        qk = tl.where(indices_n[None, :] < N, qk, -INF)
+        scores = tl.dot(q_block, k_block) * scale
+        scores = _mask_scores(
+            scores,
+            indices_m,
+            indices_n,
+            M,
+            N,
+            APPLY_CAUSAL=APPLY_CAUSAL,
+            APPLY_ROW_BOUND=False,
+            APPLY_COL_BOUND=True,
+        )
 
-        m_ij = tl.maximum(m_i, tl.max(qk, axis=1))
-        qk -= m_ij[:, None]
-        p = tl.exp2(qk)
-        alpha = tl.exp2(m_i - m_ij)
-        l_ij = tl.sum(p, axis=1)
-        l_i = l_i * alpha + l_ij
-        m_i = m_ij
-    return l_i, m_i
+        m_updated = tl.maximum(m_running, tl.max(scores, axis=1))
+        scores -= m_updated[:, None]
+
+        p = tl.exp2(scores)
+        alpha = tl.exp2(m_running - m_updated)
+
+        l_running = l_running * alpha + tl.sum(p, axis=1)
+        m_running = m_updated
+
+    return l_running, m_running
 
 
 @triton.jit
-def _attn_colsum_accumulate(
-    q,
+def _accumulate_softmax_colsum(
+    q_block,
     k_block_ptr,
     o_ptr,
     scale,
     lse,
-    start_m,
-    offsets_m,
-    lo,
-    hi,
+    indices_m,
+    n_min,
+    n_max,
     M,
     N,
     BLOCK_N: tl.constexpr,
-    ON_BAND: tl.constexpr,
+    APPLY_CAUSAL: tl.constexpr,
 ):
-    C = max(0, N - M)
-    k_block_ptr = tl.advance(k_block_ptr, (0, lo))
+    k_block_ptr = tl.advance(k_block_ptr, (0, n_min))
 
-    indices_m = start_m + offsets_m
-    offsets_n = tl.arange(0, BLOCK_N)
-
-    for start_n in range(lo, hi, BLOCK_N):
+    for start_n in range(n_min, n_max, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
-        indices_n = start_n + offsets_n
+        indices_n = start_n + tl.arange(0, BLOCK_N)
 
-        k = tl.load(k_block_ptr, boundary_check=(1,), padding_option="zero")
+        k_block = tl.load(k_block_ptr, boundary_check=(1,), padding_option="zero")
         k_block_ptr = tl.advance(k_block_ptr, (0, BLOCK_N))
 
-        qk = tl.dot(q, k) * scale
-        if ON_BAND:
-            qk = tl.where(indices_m[:, None] + C >= indices_n[None, :], qk, -INF)
-        qk = tl.where(indices_n[None, :] < N, qk, -INF)
-        qk = tl.where(indices_m[:, None] < M, qk, -INF)
+        scores = tl.dot(q_block, k_block) * scale
+        scores = _mask_scores(
+            scores,
+            indices_m,
+            indices_n,
+            M,
+            N,
+            APPLY_CAUSAL=APPLY_CAUSAL,
+            APPLY_ROW_BOUND=True,
+            APPLY_COL_BOUND=True,
+        )
 
-        p = tl.exp2(qk - lse[:, None])
-        o = tl.sum(p, axis=0)
-        tl.atomic_add(o_ptr + indices_n, o, mask=indices_n < N)
+        probs = tl.exp2(scores - lse[:, None])
+        tl.atomic_add(o_ptr + indices_n, tl.sum(probs, axis=0), mask=indices_n < N)
 
 
 @triton.autotune(
-    configs=[triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=3)],
+    configs=[
+        triton.Config(
+            {"BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N},
+            num_stages=num_stages,
+            num_warps=num_warps,
+        )
+        for BLOCK_M in [64]  # [64, 128]
+        for BLOCK_N in [64]  # [32, 64, 128]
+        for num_stages in [3]  # [2, 3, 4]
+        for num_warps in [4]  # [4, 8]
+    ],
     key=["D", "CAUSAL"],
+    reset_to_zero=["o_ptr"],
 )
 @triton.jit
 def _flash_colsum_kernel(
@@ -124,12 +161,12 @@ def _flash_colsum_kernel(
     bh = tl.program_id(1)
     b, h = bh // H, bh % H
 
-    # Offset pointers by batch and head indices
+    # Offset pointers to (b, h)
     q_ptr += b.to(tl.int64) * stride_qb + h.to(tl.int64) * stride_qh
     k_ptr += b.to(tl.int64) * stride_kb + h.to(tl.int64) * stride_kh
     o_ptr += bh.to(tl.int64) * stride_obh
 
-    # Initialize query and key block pointers
+    # View Q as (M, D) and K as (D, N)
     q_block_ptr = tl.make_block_ptr(
         base=q_ptr,
         shape=(M, D),
@@ -147,86 +184,84 @@ def _flash_colsum_kernel(
         order=(0, 1),
     )
 
-    # Load the query block (keep in SRAM)
-    q = tl.load(q_block_ptr, boundary_check=(0,), padding_option="zero")
+    q_block = tl.load(q_block_ptr, boundary_check=(0,), padding_option="zero")
+    indices_m = start_m + tl.arange(0, BLOCK_M)
 
-    # Initialize offsets for query and key blocks
-    offsets_m = tl.arange(0, BLOCK_M)
-
-    # Running softmax stats
-    m_i = tl.full([BLOCK_M], -float("inf"), dtype=tl.float32)
-    l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
-
+    # Split [0, N) into:
+    #   [0, mid): always allowed (no causal mask needed)
+    #   [mid, end): causal band (mask needed)
     if CAUSAL:
-        C = max(0, N - M)
-        band_start = ((start_m + C) // BLOCK_N) * BLOCK_N
-        band_end = tl.minimum(tl.cdiv(start_m + C + BLOCK_M, BLOCK_N) * BLOCK_N, N)
+        offset = max(N - M, 0)
+        mid = ((start_m + offset) // BLOCK_N) * BLOCK_N
+        end = tl.cdiv(start_m + offset + BLOCK_M, BLOCK_N) * BLOCK_N
+    else:
+        mid = N
+        end = N
 
-    l_i, m_i = _attn_qk_softmax_lse_update(
-        l_i,
-        m_i,
-        q,
+    # Online softmax stats per query row
+    m_running = tl.full([BLOCK_M], -float("inf"), dtype=tl.float32)
+    l_running = tl.zeros([BLOCK_M], dtype=tl.float32)
+
+    # 1) Compute log-sum-exp for each query row
+    l_running, m_running = _online_softmax_lse_update(
+        l_running,
+        m_running,
+        q_block,
         k_block_ptr,
-        start_m,
         scale,
-        offsets_m,
-        lo=0,
-        hi=band_start if CAUSAL else N,
-        M=M,
-        N=N,
-        BLOCK_N=BLOCK_N,
-        ON_BAND=False,
+        indices_m,
+        0,
+        mid,
+        M,
+        N,
+        BLOCK_N,
+        APPLY_CAUSAL=False,
     )
-    if CAUSAL:
-        l_i, m_i = _attn_qk_softmax_lse_update(
-            l_i,
-            m_i,
-            q,
-            k_block_ptr,
-            start_m,
-            scale,
-            offsets_m,
-            lo=band_start,
-            hi=band_end,
-            M=M,
-            N=N,
-            BLOCK_N=BLOCK_N,
-            ON_BAND=True,
-        )
+    l_running, m_running = _online_softmax_lse_update(
+        l_running,
+        m_running,
+        q_block,
+        k_block_ptr,
+        scale,
+        indices_m,
+        mid,
+        end,
+        M,
+        N,
+        BLOCK_N,
+        APPLY_CAUSAL=True,
+    )
+    lse = m_running + tl.log2(l_running)
 
-    lse = m_i + tl.log2(l_i)
-
-    _attn_colsum_accumulate(
-        q,
+    # 2) Accumulate column sums (atomic across M-tiles)
+    _accumulate_softmax_colsum(
+        q_block,
         k_block_ptr,
         o_ptr,
         scale,
         lse,
-        start_m,
-        offsets_m,
-        lo=0,
-        hi=band_start if CAUSAL else N,
-        M=M,
-        N=N,
-        BLOCK_N=BLOCK_N,
-        ON_BAND=False,
+        indices_m,
+        0,
+        mid,
+        M,
+        N,
+        BLOCK_N,
+        APPLY_CAUSAL=False,
     )
-    if CAUSAL:
-        _attn_colsum_accumulate(
-            q,
-            k_block_ptr,
-            o_ptr,
-            scale,
-            lse,
-            start_m,
-            offsets_m,
-            lo=band_start,
-            hi=band_end,
-            M=M,
-            N=N,
-            BLOCK_N=BLOCK_N,
-            ON_BAND=True,
-        )
+    _accumulate_softmax_colsum(
+        q_block,
+        k_block_ptr,
+        o_ptr,
+        scale,
+        lse,
+        indices_m,
+        mid,
+        end,
+        M,
+        N,
+        BLOCK_N,
+        APPLY_CAUSAL=True,
+    )
 
 
 def _flash_colsum(
