@@ -37,45 +37,36 @@ pip install -e .
 
 ## Usage
 
-### 1. Non-Causal Attention (Bidirectional)
+### 1. Non-Causal Attention
 
-Compute the column sum of the attention matrix. This is equivalent to summing the attention weights $\text{Softmax}(QK^T)$ over the query dimension.
+Compute the column sum of the attention matrix $\text{Softmax}(QK^T)$.
 
 ```python
 import torch
 from flash_colsum import flash_colsum
 
-device = "cuda"
-dtype = torch.float16
+q = torch.randn(8, 16, 512, 64, device="cuda", dtype=torch.float16)
+k = torch.randn(8, 16, 512, 64, device="cuda", dtype=torch.float16)
 
-# Shapes: (Batch, Heads, Seq_Len, Head_Dim)
-Q = torch.randn(8, 16, 512, 64, device=device, dtype=dtype)
-K = torch.randn(8, 16, 512, 64, device=device, dtype=dtype)
-
-# Returns: (Batch, Key_Len) aggregated over all queries and heads
-col_sum = flash_colsum(Q, K) 
-print(col_sum.shape) # (8, 512)
+flash_colsum(q, k)  # Shape: (8, 512)
 ```
 
-### 2. Causal Attention (KV Cache)
+### 2. Causal Attention
 
-Handle autoregressive attention where $M \neq N$ (e.g., decoding steps). The kernel applies a **right-aligned causal mask**.
+Handle autoregressive attention where $M \neq N$. The kernel applies a **right-aligned causal mask**.
 
 ```python
 import torch
 from flash_colsum import flash_colsum, flash_colmean
 
-# Example: Single sequence, 32 heads, 128 new queries, 4096 existing keys
-Q = torch.randn(1, 32, 128, 128, device="cuda", dtype=torch.float16)
-K = torch.randn(1, 32, 4096, 128, device="cuda", dtype=torch.float16)
+q = torch.randn(1, 32, 128, 128, device="cuda", dtype=torch.float16)
+k = torch.randn(1, 32, 4096, 128, device="cuda", dtype=torch.float16)
 
-# Compute column sums with causal masking
-col_sum = flash_colsum(Q, K, is_causal=True) # Shape: (1, 4096)
+# Column sums with causal masking
+flash_colsum(q, k, is_causal=True)  # Shape: (1, 4096)
 
-# Compute column means (automatically handles the varying denominator due to masking)
-# Keys at the start are attended to by ALL queries.
-# Keys at the end are attended to by FEWER queries (due to causality).
-col_mean = flash_colmean(Q, K, is_causal=True) # Shape: (1, 4096)
+# Column means (normalized by the number of valid queries per key)
+flash_colmean(q, k, is_causal=True)  # Shape: (1, 4096)
 ```
 
 ## Performance
