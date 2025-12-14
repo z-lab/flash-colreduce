@@ -16,7 +16,7 @@ def naive_colreduce(
     if scale is None:
         scale = 1 / math.sqrt(query.shape[-1])
 
-    scores = torch.matmul(query.float(), key.float().transpose(-2, -1)) * scale
+    scores = torch.matmul(query, key.transpose(-2, -1)) * scale
     if is_causal:
         c = max(n - m, 0)
         q = torch.arange(m, device=query.device).view(1, 1, -1, 1)

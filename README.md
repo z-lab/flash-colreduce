@@ -71,18 +71,15 @@ flash_colreduce(q, k, is_causal=True, reduction="mean")  # Shape: (1, 32, 4096)
 
 Flash-ColReduce achieves significant speedups and memory savings over naïve implementations. By fusing softmax and reduction into a single kernel, it avoids writing the massive $B \times H \times M \times N$ attention matrix to GPU memory.
 
-![A6000 Benchmark Results](assets/A6000_benchmark.png)
-*Benchmarked on NVIDIA RTX A6000 with FP16 precision*
-
-![5090 Benchmark Results](assets/5090_benchmark.png)
-*Benchmarked on NVIDIA GeForce RTX 5090 with FP16 precision*
+![Benchmark Results on RTX Pro 6000 Blackwell](assets/benchmarks/rtx-pro-6000-blackwell.png)
+*Benchmarked on NVIDIA RTX Pro 6000 Blackwell with FP16 precision*
 
 ## Development
 
 ### Project Structure
 ```
 flash-colreduce/
-├── flash_colreduce/          # Source code
+├── flash_colreduce/       # Source code
 │   ├── flash.py           # Triton kernels & API
 │   └── naive.py           # Reference PyTorch implementations
 ├── benchmarks/            # Performance scripts
