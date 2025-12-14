@@ -4,7 +4,7 @@ import torch
 import triton
 import triton.language as tl
 
-__all__ = ["flash_colsum", "flash_colmean"]
+__all__ = ["flash_colreduce"]
 
 
 @triton.jit
@@ -135,7 +135,7 @@ def _accumulate_softmax_colsum(
     reset_to_zero=["o_ptr"],
 )
 @triton.jit
-def _flash_colsum_kernel(
+def _flash_colreduce_kernel(
     q_ptr,
     k_ptr,
     o_ptr,
@@ -264,7 +264,7 @@ def _flash_colsum_kernel(
     )
 
 
-def _flash_colsum(
+def _flash_colreduce(
     q: torch.Tensor,
     k: torch.Tensor,
     is_causal: bool,
@@ -273,7 +273,7 @@ def _flash_colsum(
     b, h, m, d = q.shape
     _, _, n, _ = k.shape
     o = torch.zeros((b * h, n), device=q.device, dtype=torch.float32)
-    _flash_colsum_kernel[lambda config: (triton.cdiv(m, config["BLOCK_M"]), b * h)](
+    _flash_colreduce_kernel[lambda config: (triton.cdiv(m, config["BLOCK_M"]), b * h)](
         q,
         k,
         o,
@@ -293,95 +293,73 @@ def _flash_colsum(
         d,
         is_causal,
     )
-    return o.view(b, h, n).sum(dim=1).to(q.dtype)
+    return o.view(b, h, n).to(q.dtype)
 
 
-def flash_colsum(
+def flash_colreduce(
     query: torch.Tensor,
     key: torch.Tensor,
     is_causal: bool = False,
     scale: float | None = None,
+    reduction: str = "sum",
 ) -> torch.Tensor:
     """
-    Compute per-key column sums of the softmax attention matrix using a
+    Compute a per-key column reduction of the softmax attention matrix using a
     FlashAttention-style fused kernel.
 
     Given queries Q ∈ R[B, H, M, D] and keys K ∈ R[B, H, N, D], this function
     computes, without materializing the full attention matrix:
 
-        S[b, k] = ∑_{h=1..H} ∑_{m=1..M} softmax(QKᵀ · scale)[b, h, m, k]
+        S[b, h, m, n] = softmax(QKᵀ · scale)[b, h, m, n]
+        R[b, h, n] = reduce_{m=1..M} S[b, h, m, n]
+    
+    where `reduce` is either a sum or a mean over the query dimension, as
+    specified by `reduction`.
 
     The computation uses an online softmax formulation and is memory-efficient,
     avoiding explicit construction of the QKᵀ matrix.
 
     If `is_causal=True`, a **right-aligned causal mask** is applied: when M ≠ N,
     query index `m` attends to keys up to index `m + (N - M)`, matching the
-    behavior of KV-cached autoregressive attention.
+    behavior of KV-cached autoregressive attention. For `reduction="mean"`,
+    the normalization accounts for the number of valid (unmasked) queries
+    contributing to each key position.
 
     Args:
         query: Query tensor of shape (B, H, M, D).
         key: Key tensor of shape (B, H, N, D).
         is_causal: If True, apply right-aligned causal masking.
         scale: Optional attention scale factor. Defaults to 1 / sqrt(D).
+        reduction: Column-wise reduction over queries. Either:
+            - "sum": sum of attention weights per key (default)
+            - "mean": mean attention weight per key
 
     Returns:
-        A tensor of shape (B, N) containing the summed attention weights for each
-        key position, aggregated over all queries and heads.
+        A tensor of shape (B, H, N) containing the reduced attention weights for
+        each key position, per batch and per head.
     """
     if not query.is_cuda or not key.is_cuda:
         raise ValueError("Query and key tensors must be on CUDA device.")
+
     if not all(query.shape[k] == key.shape[k] for k in [0, 1, 3]):
         raise ValueError(
             f"Query and key tensors must have same batch size, number of heads, and head dimension. "
             f"Got query shape: {query.shape}, key shape: {key.shape}."
         )
+    
+    if reduction not in ["sum", "mean"]:
+        raise ValueError(f"Invalid reduction: {reduction}. Must be 'sum', or 'mean'.")
+
     if scale is None:
         scale = 1 / math.sqrt(query.shape[-1])
-    return _flash_colsum(query, key, is_causal=is_causal, scale=scale)
+    scores =  _flash_colreduce(query, key, is_causal=is_causal, scale=scale)
 
-
-def flash_colmean(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    is_causal: bool = False,
-    scale: float | None = None,
-) -> torch.Tensor:
-    """
-    Compute per-key column means of the softmax attention matrix using a
-    FlashAttention-style fused kernel.
-
-    This function returns the average attention weight assigned to each key
-    position, aggregated over all queries and heads, without materializing
-    the full attention matrix.
-
-    Internally, this is computed as the column sum of the attention matrix
-    (see `flash_colsum`) followed by a per-key normalization.
-
-    If `is_causal=True`, a **right-aligned causal mask** is assumed. When the
-    query and key lengths differ (M ≠ N), different key positions are attended
-    by different numbers of queries:
-        - Keys [0, N - M): attended by all M queries
-        - Keys [N - M, N): attended by N - k queries (decreasing from M to 1)
-
-    The function automatically applies the correct per-key normalization in
-    this case.
-
-    Args:
-        query: Query tensor of shape (B, H, M, D).
-        key: Key tensor of shape (B, H, N, D).
-        is_causal: If True, apply right-aligned causal masking.
-        scale: Optional attention scale factor. Defaults to 1 / sqrt(D).
-
-    Returns:
-        A tensor of shape (B, N) containing the mean attention weight for each
-        key position, averaged over all queries and heads.
-    """
-    m, n = query.shape[2], key.shape[2]
-    weight = flash_colsum(query, key, is_causal=is_causal, scale=scale)
-    if is_causal:
-        c = max(n - m, 0)
-        weight[:, :c] /= m
-        weight[:, c:] /= torch.arange(n - c, 0, -1, device=query.device)
-    else:
-        weight /= m
-    return weight / query.shape[1]
+    if reduction == "mean":
+        m, n = query.shape[2], key.shape[2]
+        if is_causal:
+            c = max(n - m, 0)
+            scores[..., :c] /= m
+            scores[..., c:] /= torch.arange(n - c, 0, -1, device=query.device)
+        else:
+            scores /= m
+    return scores.to(query.dtype)

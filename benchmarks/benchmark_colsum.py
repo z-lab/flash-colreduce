@@ -4,13 +4,14 @@ import math
 import os
 import time
 from typing import Dict, Iterable, List, Optional, Tuple
+import sys
 
 import matplotlib.pyplot as plt
 import matplotlib
 import torch
 
 from flash_colsum import flash_colsum
-from benchmarks.baselines import naive_colsum, triton_attention
+from baselines import naive_colsum, triton_attention
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, BarColumn, TimeElapsedColumn, TimeRemainingColumn
@@ -41,20 +42,20 @@ def _sync():
 		torch.cuda.synchronize()
 
 
+@torch.inference_mode()
 def measure_latency(fn, warmup: int = 10, iters: int = 50) -> float:
 	"""
 	Measure average latency of a pure inference function `fn`.
 	Gradients are disabled so we don't allocate autograd graphs between runs.
 	"""
-	with torch.no_grad():
-		for _ in range(warmup):
-			fn()
-			_sync()
-		start = time.perf_counter()
-		for _ in range(iters):
-			fn()
-			_sync()
-		end = time.perf_counter()
+	for _ in range(warmup):
+		fn()
+		_sync()
+	start = time.perf_counter()
+	for _ in range(iters):
+		fn()
+		_sync()
+	end = time.perf_counter()
 	return (end - start) / iters
 
 
@@ -88,7 +89,6 @@ def run_chunked_baseline(strategy: str, Q: torch.Tensor, K: torch.Tensor, scale:
 			# Default if not provided: half the batch
 			batch_chunk_size = max(1, B // 2)
 		# Use the provided chunk size directly (last successful B)
-		import sys
 		print(f"[Chunked baseline: B={B}, chunk_size={batch_chunk_size}, num_chunks={B//batch_chunk_size}]", file=sys.stderr)
 	
 	def chunked_colsum():
@@ -245,7 +245,6 @@ def run_point(
 		methods: List of methods to run. Options: "naive", "flash_colsum", "triton_fa2"
 		         If None, runs all methods.
 	"""
-	import sys
 	
 	# Determine strategy name for chunked baseline compatibility
 	if is_causal and Q.shape[0] > 1:

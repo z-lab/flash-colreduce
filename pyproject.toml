@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flash-colsum"
+name = "flash-colreduce"
 version = "0.2.0"
-description = "Fast, memory-efficient attention column sum"
+description = "Fast, memory-efficient attention column reduction"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = { text = "MIT License" }
@@ -47,14 +47,14 @@ bench = [
   "rich>=13.7",
 ]
 all = [
-  "flash-colsum[test]",
-  "flash-colsum[dev]",
-  "flash-colsum[bench]",
+  "flash-colreduce[test]",
+  "flash-colreduce[dev]",
+  "flash-colreduce[bench]",
 ]
 
 [project.urls]
-Homepage = "https://github.com/z-lab/flash-colsum"
-Issues = "https://github.com/z-lab/flash-colsum/issues"
+Homepage = "https://github.com/z-lab/flash-colreduce"
+Issues = "https://github.com/z-lab/flash-colreduce/issues"
 
 [tool.black]
 line-length = 120
@@ -66,4 +66,4 @@ testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["flash_colsum*"]
+include = ["flash_colreduce*"]
