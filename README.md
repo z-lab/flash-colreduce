@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-**Flash-ColReduce** provides highly optimized Triton kernels for computing column-wise reductions of the attention matrix such as sums or means without materializing the full $O(N^2)$ attention weights.
+**Flash-ColReduce** provides highly optimized Triton kernels for computing column-wise reductions of the attention matrix such as sum, mean, or max without materializing the full $O(N^2)$ attention weights.
 
 This primitive is essential for KV-cache pruning, token importance estimation, and attention analysis in Large Language Models (LLMs) and Vision-Language Models (VLMs). It powers the visual token pruning in [SparseVILA](https://arxiv.org/abs/2510.17777).
 
@@ -50,6 +50,7 @@ k = torch.randn(8, 16, 512, 64, device="cuda", dtype=torch.float16)
 
 flash_colreduce(q, k, reduction="sum")  # Shape: (8, 16, 512)
 flash_colreduce(q, k, reduction="mean")  # Shape: (8, 16, 512)
+flash_colreduce(q, k, reduction="max")  # Shape: (8, 16, 512)
 ```
 
 ### 2. Causal Attention
@@ -63,8 +64,9 @@ from flash_colreduce import flash_colreduce
 q = torch.randn(1, 32, 128, 128, device="cuda", dtype=torch.float16)
 k = torch.randn(1, 32, 4096, 128, device="cuda", dtype=torch.float16)
 
-flash_colreduce(q, k, is_causal=True, reduction="sum")  # Shape: (1, 32, 4096)
-flash_colreduce(q, k, is_causal=True, reduction="mean")  # Shape: (1, 32, 4096)
+flash_colreduce(q, k, reduction="sum", is_causal=True)  # Shape: (1, 32, 4096)
+flash_colreduce(q, k, reduction="mean", is_causal=True)  # Shape: (1, 32, 4096)
+flash_colreduce(q, k, reduction="max", is_causal=True)  # Shape: (1, 32, 4096)
 ```
 
 ## Performance

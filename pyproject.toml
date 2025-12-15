@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flash-colreduce"
 version = "0.2.0"
-description = "Fast, memory-efficient attention column reduction (e.g., sum, mean)"
+description = "Fast, memory-efficient attention column reduction (e.g., sum, mean, max)"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = { text = "MIT License" }
@@ -43,8 +43,8 @@ dev = [
   "black>=24.0",
 ]
 bench = [
-  "matplotlib>=3.7",
   "rich>=13.7",
+  "tqdm>=4.67",
 ]
 all = [
   "flash-colreduce[test]",

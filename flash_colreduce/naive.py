@@ -8,9 +8,9 @@ __all__ = ["naive_colreduce"]
 def naive_colreduce(
     query: torch.Tensor,
     key: torch.Tensor,
+    reduction: str,
     is_causal: bool = False,
     scale: float | None = None,
-    reduction: str = "sum",
 ) -> torch.Tensor:
     m, n = query.shape[2], key.shape[2]
     if scale is None:
@@ -33,6 +33,8 @@ def naive_colreduce(
             scores[..., c:] /= torch.arange(n - c, 0, -1, device=query.device)
         else:
             scores /= m
+    elif reduction == "max":
+        scores = scores.max(dim=2)[0]
     else:
-        raise ValueError(f"Invalid reduction: {reduction}. Must be 'sum', or 'mean'.")
+        raise ValueError(f"Invalid reduction: {reduction}. Must be 'sum', 'mean', or 'max'.")
     return scores.to(query.dtype)

@@ -32,7 +32,7 @@ def _mask_scores(
 
 
 @triton.jit
-def _online_softmax_lse_update(
+def _update_softmax_lse(
     l_running,
     m_running,
     q_block,
@@ -70,17 +70,17 @@ def _online_softmax_lse_update(
         m_updated = tl.maximum(m_running, tl.max(scores, axis=1))
         scores -= m_updated[:, None]
 
-        p = tl.exp2(scores)
+        probs = tl.exp2(scores)
         alpha = tl.exp2(m_running - m_updated)
 
-        l_running = l_running * alpha + tl.sum(p, axis=1)
+        l_running = l_running * alpha + tl.sum(probs, axis=1)
         m_running = m_updated
 
     return l_running, m_running
 
 
 @triton.jit
-def _accumulate_softmax_colsum(
+def _update_softmax_cstats(
     q_block,
     k_block_ptr,
     o_ptr,
@@ -92,6 +92,7 @@ def _accumulate_softmax_colsum(
     M,
     N,
     BLOCK_N: tl.constexpr,
+    REDUCTION: tl.constexpr,
     APPLY_CAUSAL: tl.constexpr,
 ):
     k_block_ptr = tl.advance(k_block_ptr, (0, n_min))
@@ -116,7 +117,12 @@ def _accumulate_softmax_colsum(
         )
 
         probs = tl.exp2(scores - lse[:, None])
-        tl.atomic_add(o_ptr + indices_n, tl.sum(probs, axis=0), mask=indices_n < N)
+        if REDUCTION == "sum" or REDUCTION == "mean":
+            tl.atomic_add(o_ptr + indices_n, tl.sum(probs, axis=0), mask=indices_n < N)
+        elif REDUCTION == "max":
+            tl.atomic_max(o_ptr + indices_n, tl.max(probs, axis=0), mask=indices_n < N)
+        else:
+            raise ValueError(f"Invalid reduction: {REDUCTION}. Must be 'sum', 'mean', or 'max'.")
 
 
 @triton.autotune(
@@ -153,6 +159,7 @@ def _flash_colreduce_kernel(
     M,
     N,
     D: tl.constexpr,
+    REDUCTION: tl.constexpr,
     CAUSAL: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -203,7 +210,7 @@ def _flash_colreduce_kernel(
     l_running = tl.zeros([BLOCK_M], dtype=tl.float32)
 
     # 1) Compute log-sum-exp for each query row
-    l_running, m_running = _online_softmax_lse_update(
+    l_running, m_running = _update_softmax_lse(
         l_running,
         m_running,
         q_block,
@@ -217,7 +224,7 @@ def _flash_colreduce_kernel(
         BLOCK_N,
         APPLY_CAUSAL=False,
     )
-    l_running, m_running = _online_softmax_lse_update(
+    l_running, m_running = _update_softmax_lse(
         l_running,
         m_running,
         q_block,
@@ -233,8 +240,8 @@ def _flash_colreduce_kernel(
     )
     lse = m_running + tl.log2(l_running)
 
-    # 2) Accumulate column sums (atomic across M-tiles)
-    _accumulate_softmax_colsum(
+    # 2) Accumulate column stats (atomic across M-tiles)
+    _update_softmax_cstats(
         q_block,
         k_block_ptr,
         o_ptr,
@@ -246,9 +253,10 @@ def _flash_colreduce_kernel(
         M,
         N,
         BLOCK_N,
+        REDUCTION,
         APPLY_CAUSAL=False,
     )
-    _accumulate_softmax_colsum(
+    _update_softmax_cstats(
         q_block,
         k_block_ptr,
         o_ptr,
@@ -260,6 +268,7 @@ def _flash_colreduce_kernel(
         M,
         N,
         BLOCK_N,
+        REDUCTION,
         APPLY_CAUSAL=True,
     )
 
@@ -267,6 +276,7 @@ def _flash_colreduce_kernel(
 def _flash_colreduce(
     q: torch.Tensor,
     k: torch.Tensor,
+    reduction: str,
     is_causal: bool,
     scale: float,
 ) -> torch.Tensor:
@@ -291,6 +301,7 @@ def _flash_colreduce(
         m,
         n,
         d,
+        reduction,
         is_causal,
     )
     return o.view(b, h, n).to(q.dtype)
@@ -299,9 +310,9 @@ def _flash_colreduce(
 def flash_colreduce(
     query: torch.Tensor,
     key: torch.Tensor,
+    reduction: str,
     is_causal: bool = False,
     scale: float | None = None,
-    reduction: str = "sum",
 ) -> torch.Tensor:
     """
     Compute a per-key column reduction of the softmax attention matrix using a
@@ -313,7 +324,7 @@ def flash_colreduce(
         S[b, h, m, n] = softmax(QKᵀ · scale)[b, h, m, n]
         R[b, h, n] = reduce_{m=1..M} S[b, h, m, n]
 
-    where `reduce` is either a sum or a mean over the query dimension, as
+    where `reduce` is either a sum, mean, or max over the query dimension, as
     specified by `reduction`.
 
     The computation uses an online softmax formulation and is memory-efficient,
@@ -328,11 +339,12 @@ def flash_colreduce(
     Args:
         query: Query tensor of shape (B, H, M, D).
         key: Key tensor of shape (B, H, N, D).
+        reduction: Column-wise reduction over queries. Either:
+            - "sum": sum of attention weights per key
+            - "mean": mean attention weight per key
+            - "max": maximum attention weight per key
         is_causal: If True, apply right-aligned causal masking.
         scale: Optional attention scale factor. Defaults to 1 / sqrt(D).
-        reduction: Column-wise reduction over queries. Either:
-            - "sum": sum of attention weights per key (default)
-            - "mean": mean attention weight per key
 
     Returns:
         A tensor of shape (B, H, N) containing the reduced attention weights for
@@ -347,12 +359,12 @@ def flash_colreduce(
             f"Got query shape: {query.shape}, key shape: {key.shape}."
         )
 
-    if reduction not in ["sum", "mean"]:
-        raise ValueError(f"Invalid reduction: {reduction}. Must be 'sum', or 'mean'.")
+    if reduction not in ["sum", "mean", "max"]:
+        raise ValueError(f"Invalid reduction: {reduction}. Must be 'sum', 'mean', or 'max'.")
 
     if scale is None:
         scale = 1 / math.sqrt(query.shape[-1])
-    scores = _flash_colreduce(query, key, is_causal=is_causal, scale=scale)
+    scores = _flash_colreduce(query, key, reduction=reduction, is_causal=is_causal, scale=scale)
 
     if reduction == "mean":
         m, n = query.shape[2], key.shape[2]
