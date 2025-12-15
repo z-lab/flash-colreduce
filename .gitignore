@@ -28,3 +28,4 @@ dist/
 
 # Benchmark outputs
 benchmarks/out/
+benchmarks/results.json
