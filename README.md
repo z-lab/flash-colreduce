@@ -10,7 +10,7 @@ This primitive is essential for KV-cache pruning, token importance estimation, a
 
 ## Highlights
 
-- **🚀 Efficient**: Fused kernels compute column reductions in **$O(N)$ memory**, enabling 128k+ context lengths.
+- **🚀 Efficient**: Fused kernels compute column reductions in **$O(N)$ memory**.
 - **🧩 Flexible**: Supports **causal** and **non-causal** attention with irregular shapes ($M \neq N$).
 - **✅ Exact**: Uses online softmax for numerical precision and correct causal masking.
 
@@ -48,7 +48,7 @@ from flash_colreduce import flash_colreduce
 q = torch.randn(8, 16, 512, 64, device="cuda", dtype=torch.float16)
 k = torch.randn(8, 16, 512, 64, device="cuda", dtype=torch.float16)
 
-flash_colreduce(q, k, reduction="sum")   # Shape: (8, 16, 512)
+flash_colreduce(q, k, reduction="sum")  # Shape: (8, 16, 512)
 flash_colreduce(q, k, reduction="mean")  # Shape: (8, 16, 512)
 ```
 
