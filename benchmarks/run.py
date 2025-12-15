@@ -127,7 +127,6 @@ def chunked_run(
             chunk_m //= 2
         else:
             raise
-        print(f"Out of memory, reducing chunk size to {chunk_b}x{chunk_m}")
         return chunked_run(colreduce, q, k, is_causal=is_causal, chunk_b=chunk_b, chunk_m=chunk_m)
 
 
@@ -135,7 +134,7 @@ def benchmark(b: int, h: int, m: int, n: int, d: int, is_causal: bool) -> dict:
     q = torch.randn(b, h, m, d, device="cuda", dtype=torch.float16)
     k = torch.randn(b, h, n, d, device="cuda", dtype=torch.float16)
 
-    flash_fn = lambda: flash_colreduce(q, k, is_causal=is_causal)
+    flash_fn = lambda: chunked_run(flash_colreduce, q, k, is_causal=is_causal)
     naive_fn = lambda: chunked_run(naive_colreduce, q, k, is_causal=is_causal)
 
     flash_latency = measure_latency(flash_fn) * 1000

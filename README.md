@@ -76,16 +76,6 @@ Flash-ColReduce achieves significant speedups and memory savings over naïve imp
 
 ## Development
 
-### Project Structure
-```
-flash-colreduce/
-├── flash_colreduce/       # Source code
-│   ├── flash.py           # Triton kernels & API
-│   └── naive.py           # Reference PyTorch implementations
-├── benchmarks/            # Performance scripts
-└── tests/                 # Correctness tests
-```
-
 ### Running Tests
 ```bash
 pip install -e ".[test]"
@@ -94,8 +84,8 @@ pytest -v
 
 ### Running Benchmarks
 ```bash
-cd benchmarks
-python run.py
+pip install -e ".[bench]"
+python benchmarks/run.py
 ```
 
 ## Citation

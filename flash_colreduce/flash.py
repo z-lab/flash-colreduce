@@ -312,7 +312,7 @@ def flash_colreduce(
 
         S[b, h, m, n] = softmax(QKᵀ · scale)[b, h, m, n]
         R[b, h, n] = reduce_{m=1..M} S[b, h, m, n]
-    
+
     where `reduce` is either a sum or a mean over the query dimension, as
     specified by `reduction`.
 
@@ -346,13 +346,13 @@ def flash_colreduce(
             f"Query and key tensors must have same batch size, number of heads, and head dimension. "
             f"Got query shape: {query.shape}, key shape: {key.shape}."
         )
-    
+
     if reduction not in ["sum", "mean"]:
         raise ValueError(f"Invalid reduction: {reduction}. Must be 'sum', or 'mean'.")
 
     if scale is None:
         scale = 1 / math.sqrt(query.shape[-1])
-    scores =  _flash_colreduce(query, key, is_causal=is_causal, scale=scale)
+    scores = _flash_colreduce(query, key, is_causal=is_causal, scale=scale)
 
     if reduction == "mean":
         m, n = query.shape[2], key.shape[2]
