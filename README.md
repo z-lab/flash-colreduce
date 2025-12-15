@@ -71,7 +71,7 @@ flash_colreduce(q, k, is_causal=True, reduction="mean")  # Shape: (1, 32, 4096)
 
 Flash-ColReduce achieves significant speedups and memory savings over naïve implementations. By fusing softmax and reduction into a single kernel, it avoids writing the massive $B \times H \times M \times N$ attention matrix to GPU memory.
 
-![Benchmark Results on RTX Pro 6000 Blackwell](assets/benchmarks/rtx-pro-6000-blackwell.png)
+![Benchmark Results on NVIDIA RTX Pro 6000 Blackwell](benchmarks/results/rtx-pro-6000-blackwell.png)
 *Benchmarked on NVIDIA RTX Pro 6000 Blackwell with FP16 precision*
 
 ## Development
