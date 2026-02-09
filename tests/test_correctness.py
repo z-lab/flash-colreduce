@@ -7,7 +7,7 @@ from flash_colreduce import flash_colreduce, naive_colreduce
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for these tests")
 @pytest.mark.parametrize("is_causal", [False, True])
 @pytest.mark.parametrize("reduction", ["sum", "mean", "max"])
-@pytest.mark.parametrize("d", [16, 32, 64])
+@pytest.mark.parametrize("d", [16, 32, 64, 48, 72])
 @pytest.mark.parametrize("m,n", [(128, 128), (131, 131), (128, 1024), (131, 1027)])
 @pytest.mark.parametrize("h", [8, 13])
 @pytest.mark.parametrize("b", [1, 4, 7])
