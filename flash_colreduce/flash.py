@@ -1,6 +1,7 @@
 import math
 
 import torch
+import torch.nn.functional as F
 import triton
 import triton.language as tl
 
@@ -364,6 +365,13 @@ def flash_colreduce(
 
     if scale is None:
         scale = 1 / math.sqrt(query.shape[-1])
+    # Pad head dimension to next power of 2 if needed (required by Triton tl.dot)
+    d = query.shape[-1]
+    if d & (d - 1) != 0:
+        d_padded = 1 << (d - 1).bit_length()
+        query = F.pad(query, (0, d_padded - d))
+        key = F.pad(key, (0, d_padded - d))
+
     scores = _flash_colreduce(query, key, reduction=reduction, is_causal=is_causal, scale=scale)
 
     if reduction == "mean":
